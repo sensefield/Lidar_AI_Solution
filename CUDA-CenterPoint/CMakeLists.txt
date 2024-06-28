@@ -20,6 +20,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 cmake_minimum_required(VERSION 2.8.7)
+cmake_policy(SET CMP0057 NEW)
 project(centerpoint)
 set(arch ${CMAKE_HOST_SYSTEM_PROCESSOR})
 
@@ -38,6 +39,9 @@ set(TENSORRT_INCLUDE ${TENSORRT_ROOT}/include)
 set(TENSORRT_LIB     ${TENSORRT_ROOT}/lib)
 
 find_package(CUDA REQUIRED)
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(sensor_msgs REQUIRED)
 if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
   message("Using Debug Mode")
   set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -g -G --ptxas-options=-v)
@@ -48,6 +52,8 @@ include_directories(
   ${TENSORRT_INCLUDE}
   3rdparty/libspconv/include
   include
+  ${rclcpp_INCLUDE_DIRS}
+  ${sensor_msgs_INCLUDE_DIRS}
 )
 
 link_directories(
@@ -65,4 +71,16 @@ cuda_add_executable(${PROJECT_NAME} main.cpp ${SOURCE_FILES})
 target_link_LIBraries(${PROJECT_NAME}
     libnvinfer.so
     libspconv.so
+    ${rclcpp_LIBRARIES}
+    ${sensor_msgs_LIBRARIES}
+)
+
+ament_target_dependencies(${PROJECT_NAME}
+  rclcpp
+  sensor_msgs
+)
+
+install(TARGETS
+  ${PROJECT_NAME}
+  DESTINATION lib/${PROJECT_NAME}
 )

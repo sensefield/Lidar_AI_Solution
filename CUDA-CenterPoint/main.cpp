@@ -21,6 +21,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
  
+#include <rclcpp/rclcpp.hpp>
 #include <sstream>
 #include <fstream>
 #include <stdio.h>
@@ -30,7 +31,9 @@
 #include <dirent.h>
 
 #include "common.h"
-#include "centerpoint.h"
+#include "node.h"
+
+#include <sensor_msgs/msg/point_cloud2.hpp>
 
 std::string Model_File = "../model/rpn_centerhead_sim.plan";
 std::string Save_Dir   = "../data/prediction/";
@@ -115,6 +118,7 @@ int loadData(const char *file, void **data, unsigned int *length)
     return 0;  
 }
 
+std::unordered_set<int> hashSet;
 void SaveBoxPred(std::vector<Bndbox> boxes, std::string file_name)
 {
     std::ofstream ofs;
@@ -123,18 +127,22 @@ void SaveBoxPred(std::vector<Bndbox> boxes, std::string file_name)
     ofs.precision(5);
     if (ofs.is_open()) {
         for (const auto box : boxes) {
-          ofs << box.x << " ";
-          ofs << box.y << " ";
-          ofs << box.z << " ";
-          ofs << box.w << " ";
-          ofs << box.l << " ";
-          ofs << box.h << " ";
-          ofs << box.vx << " ";
-          ofs << box.vy << " ";
-          ofs << box.rt << " ";
-          ofs << box.id << " ";
-          ofs << box.score << " ";
-          ofs << "\n";
+            if (std::isnan(box.x)) {
+                continue;
+            }
+            hashSet.insert(box.id);
+            ofs << box.x << " ";
+            ofs << box.y << " ";
+            ofs << box.z << " ";
+            ofs << box.w << " ";
+            ofs << box.l << " ";
+            ofs << box.h << " ";
+            ofs << box.vx << " ";
+            ofs << box.vy << " ";
+            ofs << box.rt << " ";
+            ofs << box.id << " ";
+            ofs << box.score << " ";
+            ofs << "\n";
         }
     }
     else {
@@ -142,6 +150,11 @@ void SaveBoxPred(std::vector<Bndbox> boxes, std::string file_name)
     }
     ofs.close();
     std::cout << "Saved prediction in: " << file_name << std::endl;
+    
+    for (const int& element : hashSet) {
+        std::cout << element << " ";
+    }
+    std::cout << std::endl;
     return;
 }
 
@@ -168,65 +181,55 @@ static void help()
     exit(EXIT_SUCCESS);
 }
 
-int main(int argc, const char **argv)
-{
-    if (argc < 2)
-        help();
+CenterPointNode::CenterPointNode() : Node("centerpoint"), centerpoint(Model_File, false) {
+    RCLCPP_INFO(this-> get_logger(), "Node has been started.");
 
-    const char *value = nullptr;
-    bool verbose = false;
-    for (int i = 2; i < argc; ++i) {
-        if (startswith(argv[i], "--verbose", &value)) {
-            verbose = true;
-        } else {
-            help();
-        }
-    }
-
-    const char *data_folder  = argv[1];
-
-    GetDeviceInfo();
-
-    std::vector<std::string> files;
-    getFolderFile(data_folder, files);
-
-    std::cout << "Total " << files.size() << std::endl;
+    pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        "/livox/lidar", rclcpp::SensorDataQoS{}.keep_last(1),
+        std::bind(&CenterPointNode::pointCloudCallback, this, std::placeholders::_1));
 
     Params params;
     cudaStream_t stream = NULL;
     checkCudaErrors(cudaStreamCreate(&stream));
 
-    CenterPoint centerpoint(Model_File, verbose);
     centerpoint.prepare();
+}
 
-    float *d_points = nullptr;    
-    checkCudaErrors(cudaMalloc((void **)&d_points, MAX_POINTS_NUM * params.feature_num * sizeof(float)));
-    for (const auto & file : files)
-    {
-        std::string dataFile = data_folder + file + ".bin";
-
-        std::cout << "\n<<<<<<<<<<<" <<std::endl;
-        std::cout << "load file: "<< dataFile <<std::endl;
-
-        unsigned int length = 0;
-        void *pc_data = NULL;
-
-        loadData(dataFile.c_str() , &pc_data, &length);
-        size_t points_num = length / (params.feature_num * sizeof(float)) ;
-        std::cout << "find points num: " << points_num << std::endl;
-
-        checkCudaErrors(cudaMemcpy(d_points, pc_data, length, cudaMemcpyHostToDevice));
-
-        centerpoint.doinfer((void *)d_points, points_num, stream);
-
-        std::string save_file_name = Save_Dir + file + ".txt";
-        SaveBoxPred(centerpoint.nms_pred_, save_file_name);
-
-        std::cout << ">>>>>>>>>>>" <<std::endl;
-    }
-
+CenterPointNode::~CenterPointNode() {
     centerpoint.perf_report();
     checkCudaErrors(cudaFree(d_points));
     checkCudaErrors(cudaStreamDestroy(stream));
+}
+
+void CenterPointNode::pointCloudCallback(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_pointcloud_msg)
+{
+    unsigned int length = input_pointcloud_msg->data.size();
+    size_t points_num = input_pointcloud_msg->height * input_pointcloud_msg->width;
+
+    float *d_points = nullptr;
+    checkCudaErrors(cudaMalloc((void **)&d_points, length));
+    checkCudaErrors(cudaMemcpy(d_points, input_pointcloud_msg->data.data(), length, cudaMemcpyHostToDevice));
+
+    centerpoint.doinfer((void *)d_points, points_num, stream);
+
+    static int file_index = 1;
+    std::string save_file_name = Save_Dir + std::to_string(file_index) + ".txt";
+    SaveBoxPred(centerpoint.nms_pred_, save_file_name);
+
+    RCLCPP_INFO(this->get_logger(), "Saved prediction in: %s", save_file_name.c_str());
+}
+
+int main(int argc, const char **argv)
+{
+    GetDeviceInfo();
+
+    rclcpp::init(argc, argv);
+
+    auto node = std::make_shared<CenterPointNode>();
+
+    rclcpp::spin(node);
+
+    rclcpp::shutdown();
     return 0;
 }
