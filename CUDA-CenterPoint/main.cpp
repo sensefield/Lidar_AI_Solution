@@ -20,7 +20,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
- 
+
 #include <rclcpp/rclcpp.hpp>
 #include <sstream>
 #include <fstream>
@@ -34,9 +34,14 @@
 #include "node.h"
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/header.hpp>
+#include <vision_msgs/msg/bounding_box3_d.hpp>
+#include <vision_msgs/msg/detection3_d.hpp>
+#include <vision_msgs/msg/detection3_d_array.hpp>
+#include <vision_msgs/msg/object_hypothesis_with_pose.hpp>
 
 std::string Model_File = "../model/rpn_centerhead_sim.plan";
-std::string Save_Dir   = "../data/prediction/";
+std::string Save_Dir = "../data/prediction/";
 
 void GetDeviceInfo()
 {
@@ -45,13 +50,14 @@ void GetDeviceInfo()
     int count = 0;
     cudaGetDeviceCount(&count);
     printf("\nGPU has cuda devices: %d\n", count);
-    for (int i = 0; i < count; ++i) {
+    for (int i = 0; i < count; ++i)
+    {
         cudaGetDeviceProperties(&prop, i);
         printf("----device id: %d info----\n", i);
         printf("  GPU : %s \n", prop.name);
         printf("  Capbility: %d.%d\n", prop.major, prop.minor);
         printf("  Global memory: %luMB\n", prop.totalGlobalMem >> 20);
-        printf("  Const memory: %luKB\n", prop.totalConstMem  >> 10);
+        printf("  Const memory: %luKB\n", prop.totalConstMem >> 10);
         printf("  SM in a block: %luKB\n", prop.sharedMemPerBlock >> 10);
         printf("  warp size: %d\n", prop.warpSize);
         printf("  threads in a block: %d\n", prop.maxThreadsPerBlock);
@@ -61,141 +67,25 @@ void GetDeviceInfo()
     printf("\n");
 }
 
-bool hasEnding(std::string const &fullString, std::string const &ending)
+CenterPointNode::CenterPointNode() : Node("centerpoint"), centerpoint(Model_File, false)
 {
-    if (fullString.length() >= ending.length()) {
-        return (0 == fullString.compare (fullString.length() - ending.length(), ending.length(), ending));
-    } else {
-        return false;
-    }
-}
-
-int getFolderFile(const char *path, std::vector<std::string>& files, const char *suffix = ".bin")
-{
-    DIR *dir;
-    struct dirent *ent;
-    if ((dir = opendir(path)) != NULL) {
-        while ((ent = readdir (dir)) != NULL) {
-            std::string file = ent->d_name;
-            if(hasEnding(file, suffix)){
-                files.push_back(file.substr(0, file.length()-4));
-            }
-        }
-        closedir(dir);
-    } else {
-        printf("No such folder: %s.", path);
-        exit(EXIT_FAILURE);
-    }
-    return EXIT_SUCCESS;
-}
-
-int loadData(const char *file, void **data, unsigned int *length)
-{
-    std::fstream dataFile(file, std::ifstream::in);
-
-    if (!dataFile.is_open()) {
-        std::cout << "Can't open files: "<< file<<std::endl;
-        return -1;
-    }
-
-    unsigned int len = 0;
-    dataFile.seekg (0, dataFile.end);
-    len = dataFile.tellg();
-    dataFile.seekg (0, dataFile.beg);
-
-    char *buffer = new char[len];
-    if (buffer==NULL) {
-        std::cout << "Can't malloc buffer."<<std::endl;
-        dataFile.close();
-        exit(EXIT_FAILURE);
-    }
-
-    dataFile.read(buffer, len);
-    dataFile.close();
-
-    *data = (void*)buffer;
-    *length = len;
-    return 0;  
-}
-
-std::unordered_set<int> hashSet;
-void SaveBoxPred(std::vector<Bndbox> boxes, std::string file_name)
-{
-    std::ofstream ofs;
-    ofs.open(file_name, std::ios::out);
-    ofs.setf(std::ios::fixed, std::ios::floatfield);
-    ofs.precision(5);
-    if (ofs.is_open()) {
-        for (const auto box : boxes) {
-            if (std::isnan(box.x)) {
-                continue;
-            }
-            hashSet.insert(box.id);
-            ofs << box.x << " ";
-            ofs << box.y << " ";
-            ofs << box.z << " ";
-            ofs << box.w << " ";
-            ofs << box.l << " ";
-            ofs << box.h << " ";
-            ofs << box.vx << " ";
-            ofs << box.vy << " ";
-            ofs << box.rt << " ";
-            ofs << box.id << " ";
-            ofs << box.score << " ";
-            ofs << "\n";
-        }
-    }
-    else {
-      std::cerr << "Output file cannot be opened!" << std::endl;
-    }
-    ofs.close();
-    std::cout << "Saved prediction in: " << file_name << std::endl;
-    
-    for (const int& element : hashSet) {
-        std::cout << element << " ";
-    }
-    std::cout << std::endl;
-    return;
-}
-
-static bool startswith(const char *s, const char *with, const char **last)
-{
-    while (*s++ == *with++)
-    {
-        if (*s == 0 || *with == 0)
-            break;
-    }
-    if (*with == 0)
-        *last = s + 1;
-    return *with == 0;
-}
-
-static void help()
-{
-    printf(
-        "Usage: \n"
-        "    ./centerpoint_infer ../data/test/\n"
-        "    Run centerpoint(voxelnet) inference with data under ../data/test/\n"
-        "    Optional: --verbose, enable verbose log level\n"
-    );
-    exit(EXIT_SUCCESS);
-}
-
-CenterPointNode::CenterPointNode() : Node("centerpoint"), centerpoint(Model_File, false) {
-    RCLCPP_INFO(this-> get_logger(), "Node has been started.");
+    RCLCPP_INFO(this->get_logger(), "Node has been started.");
 
     pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         "/livox/lidar", rclcpp::SensorDataQoS{}.keep_last(1),
         std::bind(&CenterPointNode::pointCloudCallback, this, std::placeholders::_1));
 
-    Params params;
+    detection_pub_ = this->create_publisher<vision_msgs::msg::Detection3DArray>("detections", 10);
+
+    // Params param;
     cudaStream_t stream = NULL;
     checkCudaErrors(cudaStreamCreate(&stream));
 
     centerpoint.prepare();
 }
 
-CenterPointNode::~CenterPointNode() {
+CenterPointNode::~CenterPointNode()
+{
     centerpoint.perf_report();
     checkCudaErrors(cudaFree(d_points));
     checkCudaErrors(cudaStreamDestroy(stream));
@@ -204,20 +94,68 @@ CenterPointNode::~CenterPointNode() {
 void CenterPointNode::pointCloudCallback(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_pointcloud_msg)
 {
-    unsigned int length = input_pointcloud_msg->data.size();
     size_t points_num = input_pointcloud_msg->height * input_pointcloud_msg->width;
 
+    // x, y, z, intensity, line のみを使用する
+    std::vector<float> processed_points;
+    processed_points.reserve(points_num * 5); // x, y, z, intensity, line の5要素
+
+    for (size_t i = 0; i < points_num; ++i)
+    {
+        float x, y, z, intensity, tag, line;
+        memcpy(&x, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[0].offset], sizeof(float));
+        memcpy(&y, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[1].offset], sizeof(float));
+        memcpy(&z, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[2].offset], sizeof(float));
+        memcpy(&intensity, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[3].offset], sizeof(float));
+        memcpy(&tag, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[4].offset], sizeof(uint8_t));
+        memcpy(&line, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[5].offset], sizeof(uint8_t));
+        // memcpy(&line, &input_pointcloud_msg->data[i * input_pointcloud_msg->point_step + input_pointcloud_msg->fields[5].offset], sizeof(float));
+        processed_points.push_back(x);
+        processed_points.push_back(y);
+        processed_points.push_back(z);
+        processed_points.push_back(intensity);
+        processed_points.push_back(line);
+        // processed_points.push_back(static_cast<float>(line));
+    }
     float *d_points = nullptr;
-    checkCudaErrors(cudaMalloc((void **)&d_points, length));
-    checkCudaErrors(cudaMemcpy(d_points, input_pointcloud_msg->data.data(), length, cudaMemcpyHostToDevice));
+    size_t processed_points_size = processed_points.size() * sizeof(float);
+    checkCudaErrors(cudaMalloc((void **)&d_points, processed_points_size));
+    checkCudaErrors(cudaMemcpy(d_points, processed_points.data(), processed_points_size, cudaMemcpyHostToDevice));
 
     centerpoint.doinfer((void *)d_points, points_num, stream);
 
-    static int file_index = 1;
-    std::string save_file_name = Save_Dir + std::to_string(file_index) + ".txt";
-    SaveBoxPred(centerpoint.nms_pred_, save_file_name);
+    publishDetected3DArray(input_pointcloud_msg->header, centerpoint.nms_pred_);
+}
 
-    RCLCPP_INFO(this->get_logger(), "Saved prediction in: %s", save_file_name.c_str());
+void CenterPointNode::publishDetected3DArray(const std_msgs::msg::Header &header, std::vector<Bndbox> boxes)
+{
+    auto detection_array_msg = vision_msgs::msg::Detection3DArray();
+    detection_array_msg.header = header;
+    for (const auto &box : boxes)
+    {
+        if (std::isnan(box.x))
+        {
+            continue;
+        }
+        auto detection_msg = vision_msgs::msg::Detection3D();
+        detection_msg.header = header;
+
+        auto hypothesis_with_pose = vision_msgs::msg::ObjectHypothesisWithPose();
+        hypothesis_with_pose.hypothesis.class_id = param.class_name[box.id];
+        hypothesis_with_pose.hypothesis.score = box.score;
+        detection_msg.results.push_back(hypothesis_with_pose);
+
+        auto bbox = vision_msgs::msg::BoundingBox3D();
+        bbox.center.position.x = box.x;
+        bbox.center.position.y = box.y;
+        bbox.center.position.z = box.z;
+        bbox.size.x = box.w;
+        bbox.size.y = box.l;
+        bbox.size.z = box.h;
+        detection_msg.bbox = bbox;
+        detection_array_msg.detections.push_back(detection_msg);
+    }
+    detection_pub_->publish(detection_array_msg);
 }
 
 int main(int argc, const char **argv)

@@ -42,6 +42,8 @@ find_package(CUDA REQUIRED)
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(vision_msgs REQUIRED)
 if(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
   message("Using Debug Mode")
   set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -g -G --ptxas-options=-v)
@@ -54,6 +56,8 @@ include_directories(
   include
   ${rclcpp_INCLUDE_DIRS}
   ${sensor_msgs_INCLUDE_DIRS}
+  ${std_msgs_INCLUDE_DIRS}
+  ${vision_msgs_INCLUDE_DIRS}
 )
 
 link_directories(
@@ -73,11 +77,15 @@ target_link_LIBraries(${PROJECT_NAME}
     libspconv.so
     ${rclcpp_LIBRARIES}
     ${sensor_msgs_LIBRARIES}
+    ${std_msgs_LIBRARIES}
+    ${vision_msgs_LIBRARIES}
 )
 
 ament_target_dependencies(${PROJECT_NAME}
   rclcpp
   sensor_msgs
+  std_msgs
+  vision_msgs
 )
 
 install(TARGETS
