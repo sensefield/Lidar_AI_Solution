@@ -72,10 +72,11 @@ CenterPointNode::CenterPointNode() : Node("centerpoint"), centerpoint(Model_File
     RCLCPP_INFO(this->get_logger(), "Node has been started.");
 
     pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/livox/lidar", rclcpp::SensorDataQoS{}.keep_last(1),
+        "/pointcloud_frame_transformer/output", rclcpp::SensorDataQoS{}.keep_last(1),
         std::bind(&CenterPointNode::pointCloudCallback, this, std::placeholders::_1));
 
     detection_pub_ = this->create_publisher<vision_msgs::msg::Detection3DArray>("detections", 10);
+    processing_time_pub_ = this->create_publisher<std_msgs::msg::Float64>("processing_time_ms", 10);
 
     // Params param;
     cudaStream_t stream = NULL;
@@ -94,6 +95,7 @@ CenterPointNode::~CenterPointNode()
 void CenterPointNode::pointCloudCallback(
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_pointcloud_msg)
 {
+    t_start_ = std::chrono::steady_clock::now();
     size_t points_num = input_pointcloud_msg->height * input_pointcloud_msg->width;
 
     // x, y, z, intensity, line のみを使用する
@@ -125,6 +127,16 @@ void CenterPointNode::pointCloudCallback(
     centerpoint.doinfer((void *)d_points, points_num, stream);
 
     publishDetected3DArray(input_pointcloud_msg->header, centerpoint.nms_pred_);
+
+    // publish processing time
+    t_end_ = std::chrono::steady_clock::now();
+    const auto processing_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end_ - t_start_).count();
+    // const auto one_sec = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::seconds(1)).count();
+
+    // double processing_time_ms = static_cast<double>(duration) / one_sec;
+    auto processing_time_msg = std_msgs::msg::Float64();
+    processing_time_msg.data = processing_time_ms;
+    processing_time_pub_->publish(processing_time_msg);
 }
 
 void CenterPointNode::publishDetected3DArray(const std_msgs::msg::Header &header, std::vector<Bndbox> boxes)
